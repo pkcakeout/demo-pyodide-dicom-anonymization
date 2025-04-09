@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pyodide Test</title>
+</head>
+<body>
+    <h1>Welcome to Paul's client side Pyodide Anonymizer Test</h1>
+
+    <p>Uses <a href="https://github.com/KitwareMedical/dicom-anonymizer">dicom-anonymizer</a> to anonymize DICOM files IN YOUR BROWSER!</p>
+
+    <p id="loading-progress">LOADING... PLEASE WAIT...</p>
+
+    <script src="./pyodide/pyodide.js"></script>
+    <script>
+        let pyodide = null;
+        async function main() {
+            const loadingElement = document.getElementById("loading-progress");
+
+            // Load Pyodide
+            loadingElement.innerText = "Loading Pyodide...";
+            pyodide = await loadPyodide({
+                fullStdLib: false,
+                stdout: (msg) => console.log(`Pyodide: ${msg}`),
+                stderr: (msg) => console.log(`Pyodide stderr: ${msg}`),
+            });
+            console.log("Pyodide loaded");
+
+            // Run test.py
+            loadingElement.innerText = "Loading scripts...";
+            const fileListQuery = await fetch("./files.txt");
+            const fileListText = await fileListQuery.text();
+
+            const fileList = fileListText.split("\n").filter(line => line.trim() !== "");
+
+            pyodide.FS.mkdir("/app");
+            for (let filename of fileList) {
+                const query = await fetch(`./${filename}`);
+                const content = await query.text();
+
+                const pathParts = filename.split("/");
+                filename = pathParts[pathParts.length - 1];
+                pathParts.pop();
+
+                let fullPath = '/app';
+                for (const p of pathParts) {
+                    fullPath += `/${p}`;
+                    pyodide.FS.mkdir(fullPath);
+                }
+
+                console.log(`Downloading ${filename} to ${fullPath}`);
+                pyodide.FS.writeFile(`${fullPath}/${filename}`, content);
+            }
+
+            console.log("Files downloaded; running micropip");
+
+            loadingElement.innerText = "Installing dicom-anonymizer from pypi...";
+            await pyodide.loadPackage("micropip");
+            const micropip = pyodide.pyimport("micropip");
+            await micropip.install("dicom_anonymizer");
+
+            loadingElement.innerText = "READY - you can start!";
+        }
+
+        main();
+    </script>
+
+    <form id="upload-form">
+        <label for="file-upload">Upload a file:</label>
+        <input type="file" id="file-upload" name="file-upload">
+        <button type="button" id="upload-button">Upload</button>
+    </form>
+
+    <button type="button" id="process-button">Process</button>
+
+    <p id="file-msg">File not processed</p>
+
+    <button type="button" id="download-button">Download</button>
+
+    <script>
+        async function runTest() {
+            console.log("Running test.py");
+            let result = await pyodide.runPythonAsync(`
+                import sys
+                import os
+
+                sys.path.append('/app')
+                from test import main
+
+                main()
+            `);
+
+            console.log("Test.py completed");
+            document.getElementById("file-msg").innerText = "File processed and can be downloaded";
+        }
+        document.getElementById("process-button").addEventListener("click", runTest);
+
+        document.getElementById("upload-button").addEventListener("click", async () => {
+            const fileInput = document.getElementById("file-upload");
+            const file = fileInput.files[0];
+
+            if (!file) {
+                console.log("No file selected");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                const fileContent = event.target.result;
+                const filePath = `/raw.dcm`;
+
+                pyodide.FS.writeFile(filePath, new Uint8Array(fileContent));
+                console.log(`File uploaded to ${filePath}`);
+            };
+
+            reader.readAsArrayBuffer(file);
+        });
+
+        document.getElementById("download-button").addEventListener("click", () => {
+            const outputFilePath = "/output.dcm";
+
+            try {
+                const fileData = pyodide.FS.readFile(outputFilePath);
+                const blob = new Blob([fileData], { type: "application/octet-stream" });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = "anonymized.dcm";
+                link.click();
+                console.log("File downloaded as anonymized.dcm");
+            } catch (error) {
+                console.error("Error downloading file:", error);
+                alert("File not available for download. Please process a file first.");
+            }
+        });
+    </script>
+</body>
+</html>
